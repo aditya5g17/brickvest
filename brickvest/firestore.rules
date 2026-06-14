@@ -1,0 +1,149 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function isAdmin() {
+      return signedIn()
+        && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == "admin";
+    }
+
+    function ownsInvestment() {
+      return signedIn() && request.auth.uid == resource.data.userId;
+    }
+
+    function ownsPayment() {
+      return signedIn() && request.auth.uid == resource.data.userId;
+    }
+
+    function createsOwnSandboxPayment() {
+      return signedIn()
+        && request.auth.uid == request.resource.data.userId
+        && request.resource.data.provider == "brickvest_sandbox"
+        && request.resource.data.status == "otp_pending";
+    }
+
+    function createsOwnSandboxInvestment() {
+      return signedIn()
+        && request.auth.uid == request.resource.data.userId
+        && request.resource.data.paymentProvider == "brickvest_sandbox"
+        && request.resource.data.paymentStatus == "paid"
+        && request.resource.data.status == "active";
+    }
+
+    function fundedSharesBefore() {
+      return resource.data.get('fundedShares', 0) is number
+          && resource.data.get('fundedShares', 0) > 0
+        ? resource.data.get('fundedShares', 0)
+        : (
+            resource.data.get('fundedPercent', 0) is number
+            && resource.data.get('totalShares', 0) is number
+            && resource.data.get('totalShares', 0) > 0
+          )
+          ? (resource.data.get('fundedPercent', 0) * resource.data.get('totalShares', 0)) / 100
+          : 0;
+    }
+
+    function isFundingUpdate() {
+      return signedIn()
+        && request.resource.data.diff(resource.data).affectedKeys()
+          .hasOnly(['fundedShares', 'fundedPercent', 'totalShares', 'updatedAt', 'investorCount'])
+        && request.resource.data.fundedShares is number
+        && request.resource.data.totalShares is number
+        && request.resource.data.fundedShares > fundedSharesBefore()
+        && request.resource.data.fundedShares <= request.resource.data.totalShares
+        && request.resource.data.fundedPercent is number
+        && request.resource.data.fundedPercent <= 100;
+    }
+
+    match /properties/{propertyId} {
+      allow read: if true;
+      allow create: if isAdmin()
+        && request.resource.data.createdBy == request.auth.uid
+        && request.resource.data.title is string
+        && request.resource.data.location is string
+        && request.resource.data.image is string
+        && request.resource.data.price is number
+        && request.resource.data.sharePrice is number;
+      allow update: if isAdmin() || isFundingUpdate();
+      allow delete: if isAdmin();
+    }
+
+    match /investments/{investmentId} {
+      allow read: if ownsInvestment() || isAdmin();
+      allow create: if createsOwnSandboxInvestment();
+      allow update, delete: if false;
+    }
+
+    match /payments/{paymentId} {
+      allow read: if ownsPayment() || isAdmin();
+      allow create: if createsOwnSandboxPayment();
+      allow update: if ownsPayment()
+        && resource.data.get('provider', '') == "brickvest_sandbox"
+        && resource.data.status == "otp_pending"
+        && request.resource.data.status == "paid";
+      allow delete: if false;
+    }
+
+    match /reviewQueue/{queueId} {
+      allow read: if isAdmin();
+      allow create: if signedIn()
+        && request.resource.data.savedBy == request.auth.uid
+        && request.resource.data.title is string
+        && request.resource.data.location is string
+        && request.resource.data.price is number
+        && request.resource.data.status == "pending";
+      allow update: if isAdmin()
+        && resource.data.status == "pending"
+        && request.resource.data.status in ["pending", "published", "rejected"]
+        && (
+          request.resource.data.status != "rejected"
+          || (request.resource.data.rejectReason is string
+            && request.resource.data.rejectReason.size() > 0)
+        );
+      allow delete: if isAdmin();
+    }
+
+    match /propertyInvestors/{propertyId} {
+      allow read: if true;
+
+      match /members/{memberId} {
+        allow read: if true;
+        allow create: if signedIn() && request.auth.uid == memberId;
+        allow update, delete: if false;
+      }
+    }
+
+    match /notifications/{notificationId} {
+      allow read: if signedIn() && resource.data.userId == request.auth.uid;
+      allow create: if signedIn()
+        && request.resource.data.userId == request.auth.uid
+        && request.resource.data.title is string
+        && request.resource.data.body is string
+        && request.resource.data.type is string
+        && request.resource.data.read == false;
+      allow update: if signedIn()
+        && resource.data.userId == request.auth.uid
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['read', 'readAt']);
+      allow delete: if false;
+    }
+
+    match /users/{userId} {
+      function isOwnProfileUpdate() {
+        return signedIn()
+          && request.auth.uid == userId
+          && request.resource.data.get('role', 'user') == resource.data.get('role', 'user');
+      }
+
+      allow read: if signedIn() && (request.auth.uid == userId || isAdmin());
+      allow create: if signedIn()
+        && request.auth.uid == userId
+        && request.resource.data.role == "user";
+      allow update: if isAdmin() || isOwnProfileUpdate();
+      allow delete: if isAdmin();
+    }
+  }
+}
