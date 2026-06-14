@@ -13,7 +13,7 @@ function Home() {
           Own fractional shares of premium properties and earn passive rental income.
         </p>
 
-        <button className="bg-blue-600 px-8 py-3 rounded-lg text-lg hover:bg-blue-700 transition">
+        <button className="bg-blue-600 px-8 py-3 rounded-full text-lg hover:bg-blue-700 transition">
           Explore Properties
         </button>
       </section>
